@@ -44,6 +44,54 @@ Document your RAG implementation process, including data preparation steps, conf
 
 This approach requires a blend of skills in natural language processing, software development, and system architecture. Given your expertise, you should be well-equipped to tackle the challenges of integrating RAG into your project."
 
+## Summary
+
+Here's a mermaid diagram that encapsulates the end-to-end local setup, including the separate code repositories for the RAG implementation and the repository being embedded.
+
+```mermaid
+graph TD;
+    subgraph RAG_Repo["RAG Implementation Repository"]
+    direction TB
+    A[Preprocess Data] --> B[Generate Embeddings]
+    B --> C[Index Embeddings with Annoy]
+    C --> D[Load Annoy & Filename Mapping]
+    D --> E[Prepare Query]
+    E --> F[Retrieve Relevant Documents]
+    F --> G[Preprocess & Combine with Query]
+    G --> H[Generate Response with GPT-4]
+    end
+
+    subgraph Data_Repo["Data Repository (Code & Docs)"]
+    I[Raw Code & Documentation] --> J[Preprocessed Data]
+    end
+
+    subgraph Local_FS["Local Filesystem"]
+    J --> A
+    H -.-> K[Generated Responses]
+    end
+
+    style RAG_Repo fill:#f9f,stroke:#333,stroke-width:2px
+    style Data_Repo fill:#bbf,stroke:#333,stroke-width:2px
+    style Local_FS fill:#dfd,stroke:#333,stroke-width:4px,stroke-dasharray: 5 5
+```
+
+#### Explanation of the Diagram:
+
+- **Data Repository (Code & Docs)**: This is where your raw code and documentation reside. The preprocessing step transforms this raw data into a format suitable for embedding generation.
+
+- **RAG Implementation Repository**: Contains the logic for the entire RAG process, including:
+
+  - **Preprocess Data**: Initial preparation of data from the data repository.
+  - **Generate Embeddings**: Converts preprocessed data into embeddings using a model like Sentence Transformers.
+  - **Index Embeddings with Annoy**: Stores the generated embeddings in an Annoy index for efficient retrieval.
+  - **Load Annoy & Filename Mapping**: At query time, loads the Annoy index and the mapping between index IDs and filenames.
+  - **Prepare Query**: Converts the user's query into an embedding.
+  - **Retrieve Relevant Documents**: Uses the query embedding to find relevant documents from the indexed embeddings.
+  - **Preprocess & Combine with Query**: Prepares the retrieved documents and combines them with the original query to augment the input for the language model.
+  - **Generate Response with GPT-4**: Uses the augmented input to generate a response through a language model like GPT-4.
+
+- **Local Filesystem**: Represents the local environment where both the data and RAG repositories reside, facilitating data exchange between them and storing the generated responses.
+
 # Preprocessing
 
 Implementing a preprocessing pipeline for a code repository, especially for an application written in Rust along with its documentation, involves several steps designed to convert raw text into a format suitable for generating embeddings with Annoy (Approximate Nearest Neighbors Oh Yeah) by Spotify. The goal is to clean and structure the data in a way that maximizes the usefulness of the embeddings for retrieval tasks. Here's how you can approach it:
@@ -130,3 +178,266 @@ graph TD;
     N --> O[Integrate with Application];
     O --> P[End];
 ```
+
+# Embedding Generation and Indexing
+
+Given your scenario, where you've chosen Spotify's Annoy for your embeddings provider and your data is pre-processed code and documentation from a Rust application, the following steps will guide you through embedding generation and indexing. This example pipeline will use Python for scripting, leveraging the `sentence-transformers` library for generating embeddings and `annoy` for indexing.
+
+### Step 1: Install Required Libraries
+
+First, ensure you have the required Python libraries installed. You can install them using `pip`:
+
+```bash
+pip install sentence-transformers annoy
+```
+
+### Step 2: Generate Embeddings
+
+You'll use the `sentence-transformers` library to convert your textual data into embeddings. This library provides a straightforward API for generating high-quality sentence embeddings.
+
+```python
+from sentence_transformers import SentenceTransformer
+import os
+
+# Initialize the model
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Assuming your pre-processed text data is stored in a directory
+data_dir = "path/to/your/preprocessed/data"
+files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+
+embeddings = []
+file_names = []
+
+for file_path in files:
+    with open(file_path, 'r', encoding='utf-8') as file:
+        content = file.read()
+        # Generate embedding
+        embedding = model.encode(content)
+        embeddings.append(embedding)
+        file_names.append(os.path.basename(file_path))
+
+# At this point, `embeddings` contains the vector representations of your documents, and `file_names` contains the corresponding file names.
+```
+
+### Step 3: Index Embeddings with Annoy
+
+Once you have your embeddings, the next step is to index them using Annoy for efficient retrieval.
+
+```python
+from annoy import AnnoyIndex
+
+# The size of the embeddings
+embedding_size = len(embeddings[0])  # Assuming all embeddings have the same size
+
+# Initialize Annoy index
+t = AnnoyIndex(embedding_size, 'angular')  # 'angular' is one of the distance metrics supported by Annoy
+
+for i, embedding in enumerate(embeddings):
+    t.add_item(i, embedding)
+
+# Build the index
+t.build(10)  # The argument is the number of trees. More trees give higher precision when querying.
+t.save('path/to/your/index.ann')
+
+# Save the mapping of index to file names for later retrieval
+with open('path/to/your/index_to_filename.txt', 'w') as f:
+    for fname in file_names:
+        f.write(f"{fname}\n")
+```
+
+### Step 4: Querying the Index
+
+To query the index, you load the Annoy index, generate an embedding for your query, and then find the nearest neighbors in the index.
+
+```python
+from annoy import AnnoyIndex
+
+# Load the index
+u = AnnoyIndex(embedding_size, 'angular')
+u.load('path/to/your/index.ann')  # Super fast, will just mmap the file
+
+# To query with a new sentence:
+query = "Example query related to Rust programming"
+query_embedding = model.encode(query)
+
+# Find the top 5 nearest neighbors
+nearest_neighbors = u.get_nns_by_vector(query_embedding, 5, include_distances=True)
+
+# Load index to file name mapping
+with open('path/to/your/index_to_filename.txt', 'r') as f:
+    index_to_filename = [line.strip() for line in f]
+
+# Print the nearest neighbors and their distances
+for neighbor, distance in zip(*nearest_neighbors):
+    print(f"File: {index_to_filename[neighbor]}, Distance: {distance}")
+```
+
+This pipeline provides a comprehensive approach to generating embeddings from your Rust application's code and documentation, indexing them with Annoy, and querying the index. You can adjust parameters like the number of trees in Annoy or the model used for embeddings based on your specific requirements and the size of your dataset.
+
+## Summary
+
+Below is a mermaid diagram that summarizes the workflow for embedding generation and indexing using the sentence-transformers library for generating embeddings and annoy for indexing.
+
+```mermaid
+graph TD;
+    A[Start] --> B[Install Required Libraries];
+    B --> C[Load Pre-processed Data];
+    C --> D[Generate Embeddings with Sentence-Transformers];
+    D --> E[Initialize Annoy Index];
+    E --> F[Add Embeddings to Annoy Index];
+    F --> G[Build and Save Annoy Index];
+    G --> H[Save Index to Filename Mapping];
+    H --> I[Query Annoy Index with New Sentence];
+    I --> J[Retrieve Nearest Neighbors];
+    J --> K[End];
+```
+
+# Retrieval Mechanism
+
+Implementing a retrieval mechanism that queries an embeddings provider like Annoy involves several steps, from preparing your query to fetching relevant documents based on the query's embeddings. Below is a detailed example pipeline and workflow that outlines these steps, continuing from where we left off with embedding generation and indexing using Annoy.
+
+### Retrieval Mechanism Workflow
+
+#### Step 1: Load the Annoy Index and Filename Mapping
+
+First, you need to load the pre-built Annoy index and the mapping between index IDs and filenames. This mapping allows you to identify which documents are being referred to by the index.
+
+```python
+from annoy import AnnoyIndex
+
+# Assuming you have the embedding size and the path to your index and mapping file
+embedding_size = 384  # Example embedding size
+index_path = 'path/to/your/index.ann'
+mapping_path = 'path/to/your/index_to_filename.txt'
+
+# Load the Annoy index
+index = AnnoyIndex(embedding_size, 'angular')
+index.load(index_path)
+
+# Load the filename mapping
+with open(mapping_path, 'r') as file:
+    index_to_filename = [line.strip() for line in file]
+```
+
+#### Step 2: Prepare the Query
+
+Convert your query text into an embedding using the same model that was used for generating document embeddings. This ensures consistency in the vector space.
+
+```python
+from sentence_transformers import SentenceTransformer
+
+# Load the same model used for embedding generation
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Example query
+query_text = "How to implement async in Rust?"
+
+# Convert query to embedding
+query_embedding = model.encode(query_text)
+```
+
+#### Step 3: Query the Index for Nearest Neighbors
+
+Use the query embedding to find the nearest neighbors in the index. The number of neighbors you choose to retrieve (`n_neighbors`) can be adjusted based on your needs.
+
+```python
+# Number of nearest neighbors to retrieve
+n_neighbors = 5
+
+# Retrieve the nearest neighbors' IDs and distances
+nearest_ids, distances = index.get_nns_by_vector(query_embedding, n_neighbors, include_distances=True)
+```
+
+#### Step 4: Fetch and Display Relevant Documents
+
+Using the IDs from the nearest neighbors, fetch the corresponding filenames from your mapping. These filenames point to the documents that are most relevant to your query.
+
+```python
+# Fetch the filenames of the nearest neighbors
+nearest_files = [index_to_filename[i] for i in nearest_ids]
+
+# Display the results
+for file, distance in zip(nearest_files, distances):
+    print(f"File: {file}, Distance: {distance}")
+```
+
+### Example Pipeline Summary
+
+1. **Load Annoy Index and Filename Mapping**: Essential for translating index IDs back to identifiable document names.
+2. **Prepare the Query**: Convert the query text into an embedding using the same model that generated the document embeddings.
+3. **Query the Index**: Use the query embedding to find the nearest documents in the embedding space.
+4. **Fetch Relevant Documents**: Translate the nearest neighbor IDs back to filenames to identify the relevant documents.
+
+### Workflow Benefits
+
+- **Efficiency**: Annoy provides fast retrieval even in high-dimensional spaces, making it suitable for real-time applications.
+- **Scalability**: This approach scales well with the size of your dataset. Annoy supports adding items incrementally and can handle large indices.
+- **Flexibility**: You can adjust the number of trees in Annoy and the number of neighbors to retrieve to balance between precision and performance.
+
+This retrieval mechanism effectively bridges the gap between raw query texts and the most relevant documents in your dataset, leveraging the power of semantic search.
+
+# Augmentation and Generation
+
+Integrating a retrieval mechanism with a language model like GPT-4 for augmentation and generation involves combining the context or information retrieved from the embeddings database with the input query to enhance the language model's response. This process can significantly improve the relevance and specificity of the generated output by providing the model with additional context or supporting information.
+
+### Augmentation and Generation Workflow
+
+#### Step 1: Retrieve Relevant Context
+
+Following the retrieval mechanism steps previously outlined, you obtain a list of documents (or snippets) that are most relevant to the user's query. These documents are meant to provide additional context or information that can help the language model generate a more informed response.
+
+#### Step 2: Preprocess Retrieved Documents
+
+Before feeding the retrieved documents into the language model, it's often necessary to preprocess them. This preprocessing might involve:
+
+- **Summarization**: Reducing the content to its most essential points, especially if the documents are lengthy.
+- **Formatting**: Structuring the information in a way that's easily consumable by the language model, such as bullet points or a brief paragraph.
+- **Selection**: Choosing the most relevant parts of the documents if only specific sections are useful for the query.
+
+#### Step 3: Combine Query and Context
+
+Combine the original query with the preprocessed context to form a new, augmented input for the language model. The way you combine these can vary based on your requirements and the model's capabilities. Some approaches include:
+
+- **Concatenation**: Simply appending the context to the query, possibly with some markers or separators to indicate different sections.
+- **Interleaving**: If the context is in the form of questions and answers or key points, you might interleave these with the query or embed them within it.
+- **Prompt Engineering**: Crafting a specific prompt that incorporates both the query and the context, guiding the language model towards generating the desired output.
+
+#### Step 4: Generate Response with Language Model
+
+Feed the augmented input into the language model to generate a response. The additional context provided to the model should help it understand the query better and produce a more accurate and relevant answer.
+
+```python
+import openai
+
+openai.api_key = 'your-api-key'
+
+# Example of augmented input
+augmented_input = "Here's what I found on the topic:\n- Key point 1\n- Key point 2\nBased on this, how can we improve the process?"
+
+response = openai.Completion.create(
+  engine="text-davinci-003",  # Assuming you're using GPT-3.5 as an example
+  prompt=augmented_input,
+  max_tokens=150,
+  n=1,
+  stop=None,
+  temperature=0.7
+)
+
+print(response.choices[0].text.strip())
+```
+
+### Example Pipeline Summary
+
+1. **Retrieve Context**: Use the retrieval mechanism to find documents relevant to the user's query.
+2. **Preprocess Documents**: Summarize, format, and select the most relevant parts of these documents.
+3. **Combine Query and Context**: Craft an augmented input that combines the original query with the preprocessed context.
+4. **Generate Response**: Use the language model to generate a response based on the augmented input.
+
+### Workflow Benefits
+
+- **Enhanced Relevance**: By providing additional context, the language model can generate responses that are more relevant to the specific query.
+- **Increased Specificity**: The additional information helps the model understand the query's nuances, allowing it to produce more specific and detailed answers.
+- **Improved Accuracy**: With more context, the model is less likely to generate incorrect or unrelated responses.
+
+This augmentation and generation step leverages the strengths of both the retrieval mechanism and the generative capabilities of language models like GPT-4, resulting in a powerful tool for answering queries, generating content, or providing recommendations.
